@@ -40,7 +40,30 @@ async def run_migrations():
         kwargs["ssl"] = ssl_val
 
     print(f" Connecting to PostgreSQL host: {host}, db: {database} (ssl={ssl_val})...")
-    conn = await asyncpg.connect(**kwargs)
+    try:
+        conn = await asyncpg.connect(**kwargs)
+    except asyncpg.exceptions.InvalidCatalogNameError:
+        print(f" Database '{database}' does not exist on Neon.")
+        # Try connecting to default 'neondb' or 'postgres' to create target database or fallback
+        fallback_db = "neondb" if "neon.tech" in host else "postgres"
+        print(f" Connecting to default '{fallback_db}' database...")
+        fallback_kwargs = dict(kwargs, database=fallback_db)
+        try:
+            temp_conn = await asyncpg.connect(**fallback_kwargs)
+            try:
+                print(f" Attempting to create database '{database}'...")
+                await temp_conn.execute(f'CREATE DATABASE "{database}"')
+                print(f" Database '{database}' created successfully!")
+            except Exception as e:
+                print(f" Could not create '{database}' ({e}). Defaulting to using '{fallback_db}'.")
+                database = fallback_db
+                kwargs["database"] = fallback_db
+            finally:
+                await temp_conn.close()
+            conn = await asyncpg.connect(**kwargs)
+        except Exception as err:
+            print(f" Failed to connect to fallback database '{fallback_db}': {err}")
+            raise
 
     try:
         migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
