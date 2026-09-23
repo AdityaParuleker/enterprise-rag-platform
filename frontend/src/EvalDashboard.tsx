@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getApiUrl } from './config';
 
 export const EvalDashboard: React.FC = () => {
   const [selectedConfig, setSelectedConfig] = useState<string>('full_pipeline');
@@ -28,7 +29,7 @@ export const EvalDashboard: React.FC = () => {
     setRunning(true);
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const response = await fetch('/api/v1/eval/run', {
+      const response = await fetch(getApiUrl('/api/v1/eval/run'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -40,7 +41,7 @@ export const EvalDashboard: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         setTimeout(async () => {
-          const res = await fetch(`/api/v1/eval/results?run_id=${data.run_id}`, {
+          const res = await fetch(getApiUrl(`/api/v1/eval/results?run_id=${data.run_id}`), {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           if (res.ok) {

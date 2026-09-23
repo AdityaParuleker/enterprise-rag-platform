@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { getApiUrl } from './config';
 
 interface Citation {
   chunk_id: string;
@@ -132,7 +133,7 @@ export const Chat: React.FC = () => {
     if (!refreshToken) return null;
 
     try {
-      const response = await fetch('/api/v1/auth/refresh', {
+      const response = await fetch(getApiUrl('/api/v1/auth/refresh'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken })
@@ -172,7 +173,7 @@ export const Chat: React.FC = () => {
     }
     options.headers = headers;
 
-    const response = await fetch(url, options);
+    const response = await fetch(getApiUrl(url), options);
 
     if (response.status === 401 && !isRetry) {
       const newToken = await tryRefreshToken();

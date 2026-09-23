@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from './config';
 
 interface DocItem {
   id: string;
@@ -62,7 +63,7 @@ export const Upload: React.FC = () => {
   const fetchDocuments = async () => {
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const response = await fetch('/api/v1/documents', {
+      const response = await fetch(getApiUrl('/api/v1/documents'), {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
@@ -119,7 +120,7 @@ export const Upload: React.FC = () => {
 
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const response = await fetch('/api/v1/documents', {
+      const response = await fetch(getApiUrl('/api/v1/documents'), {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData
@@ -170,7 +171,7 @@ export const Upload: React.FC = () => {
   const handleDelete = async (docId: string) => {
     try {
       const token = localStorage.getItem('auth_token') || '';
-      await fetch(`/api/v1/documents/${docId}`, {
+      await fetch(getApiUrl(`/api/v1/documents/${docId}`), {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -184,7 +185,7 @@ export const Upload: React.FC = () => {
   const handleRetry = async (docId: string) => {
     try {
       const token = localStorage.getItem('auth_token') || '';
-      const response = await fetch(`/api/v1/documents/${docId}/retry`, {
+      const response = await fetch(getApiUrl(`/api/v1/documents/${docId}/retry`), {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { getApiUrl } from './config';
 
 interface LoginProps {
   onLoginSuccess: (token: string, tenantId: string, email: string) => void;
@@ -38,7 +39,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
     if (mode === 'login') {
       try {
-        const response = await fetch('/api/v1/auth/login', {
+        const response = await fetch(getApiUrl('/api/v1/auth/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
@@ -74,7 +75,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     } else {
       // Register Mode
       try {
-        const regRes = await fetch('/api/v1/auth/register', {
+        const regRes = await fetch(getApiUrl('/api/v1/auth/register'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -92,7 +93,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         setSuccessMsg('Account created successfully! Signing you in...');
 
         // Automatically log in after registration
-        const loginRes = await fetch('/api/v1/auth/login', {
+        const loginRes = await fetch(getApiUrl('/api/v1/auth/login'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password }),
