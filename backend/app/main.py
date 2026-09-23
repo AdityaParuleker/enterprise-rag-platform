@@ -123,6 +123,7 @@ allowed_origins = [
     "http://localhost:8080",
     "http://localhost:8000",
     "http://localhost",
+    "https://enterprise-rag-platform-blond.vercel.app"
 ]
 
 app.add_middleware(
