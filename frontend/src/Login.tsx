@@ -6,7 +6,7 @@ interface LoginProps {
 
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [email, setEmail] = useState('demo_admin@enterprise.com');
-  const [password, setPassword] = useState('SecurePass123!');
+  const [password, setPassword] = useState('password123');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -99,6 +99,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         <div className="demo-credentials">
           <strong>Demo Sandbox Session:</strong>
           <div>Email: <code>demo_admin@enterprise.com</code></div>
+          <div>Password: <code>password123</code></div>
           <div>Tenant Isolation: <code>ee45761a-f471-4f41-97ff...</code></div>
         </div>
       </div>
