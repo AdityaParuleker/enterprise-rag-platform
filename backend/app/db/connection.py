@@ -19,16 +19,23 @@ async def get_db_pool() -> asyncpg.Pool:
         password = os.getenv("POSTGRES_PASSWORD", "ekp_password")
         database = os.getenv("POSTGRES_DB", "ekp_db")
 
-        _pool = await asyncpg.create_pool(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=database,
-            min_size=1,
-            max_size=10,
-            timeout=5.0
-        )
+        ssl_env = os.getenv("POSTGRES_SSL")
+        ssl_val = ssl_env if ssl_env is not None else ("require" if host not in ("localhost", "127.0.0.1") else None)
+
+        kwargs = {
+            "host": host,
+            "port": port,
+            "user": user,
+            "password": password,
+            "database": database,
+            "min_size": 1,
+            "max_size": 10,
+            "timeout": 5.0
+        }
+        if ssl_val:
+            kwargs["ssl"] = ssl_val
+
+        _pool = await asyncpg.create_pool(**kwargs)
     return _pool
 
 
@@ -40,11 +47,18 @@ async def get_db_connection() -> asyncpg.Connection:
     password = os.getenv("POSTGRES_PASSWORD", "ekp_password")
     database = os.getenv("POSTGRES_DB", "ekp_db")
 
-    return await asyncpg.connect(
-        host=host,
-        port=port,
-        user=user,
-        password=password,
-        database=database,
-        timeout=5.0
-    )
+    ssl_env = os.getenv("POSTGRES_SSL")
+    ssl_val = ssl_env if ssl_env is not None else ("require" if host not in ("localhost", "127.0.0.1") else None)
+
+    kwargs = {
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "database": database,
+        "timeout": 5.0
+    }
+    if ssl_val:
+        kwargs["ssl"] = ssl_val
+
+    return await asyncpg.connect(**kwargs)

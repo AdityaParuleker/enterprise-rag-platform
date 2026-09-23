@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://rag-backend.onrender.com/api/:path*"
+    }
+  ]
+}

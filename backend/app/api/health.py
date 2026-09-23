@@ -37,14 +37,21 @@ async def _check_postgres() -> bool:
         password = os.getenv("POSTGRES_PASSWORD", "ekp_password")
         database = os.getenv("POSTGRES_DB", "ekp_db")
 
+        ssl_env = os.getenv("POSTGRES_SSL")
+        ssl_val = ssl_env if ssl_env is not None else ("require" if host not in ("localhost", "127.0.0.1") else None)
+
+        kwargs = {
+            "host": host,
+            "port": port,
+            "user": user,
+            "password": password,
+            "database": database
+        }
+        if ssl_val:
+            kwargs["ssl"] = ssl_val
+
         conn = await asyncio.wait_for(
-            asyncpg.connect(
-                host=host,
-                port=port,
-                user=user,
-                password=password,
-                database=database
-            ),
+            asyncpg.connect(**kwargs),
             timeout=3.0
         )
         try:
