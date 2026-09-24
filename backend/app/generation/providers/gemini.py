@@ -204,7 +204,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable or parameter is required for GeminiEmbeddingProvider.")
 
-        self.model = model or os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+        self.model = model or os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
         self.expected_dim = expected_dim or int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
         self.client = genai.Client(api_key=self.api_key)
 
@@ -219,29 +219,43 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
     def embed(self, text: str) -> List[float]:
         """
-        Generate embedding vector for a single string using Gemini text-embedding-004 API.
+        Generate embedding vector for a single string using Gemini API.
         Outputs 1024 dimensions by default via EmbedContentConfig output_dimensionality.
+        Includes automatic model candidate fallback for 404 NOT_FOUND errors.
         """
         if not text:
             text = " "
 
-        try:
-            config = types.EmbedContentConfig(output_dimensionality=self.expected_dim) if types else None
-            response = self.client.models.embed_content(
-                model=self.model,
-                contents=text,
-                config=config,
-            )
-            if hasattr(response, "embedding") and hasattr(response.embedding, "values") and response.embedding.values:
-                embedding = response.embedding.values
-            elif hasattr(response, "embeddings") and response.embeddings and hasattr(response.embeddings[0], "values"):
-                embedding = response.embeddings[0].values
-            else:
-                raise ValueError("Gemini embedding response missing embedding values")
+        candidate_models = [self.model] + [
+            m for m in ["gemini-embedding-001", "text-embedding-004", "embedding-001"] if m != self.model
+        ]
 
-            return list(embedding)
-        except Exception as e:
-            raise RuntimeError(f"Gemini embedding API error: {str(e)}")
+        last_error = None
+        for candidate in candidate_models:
+            try:
+                config = types.EmbedContentConfig(output_dimensionality=self.expected_dim) if types else None
+                response = self.client.models.embed_content(
+                    model=candidate,
+                    contents=text,
+                    config=config,
+                )
+                if hasattr(response, "embedding") and hasattr(response.embedding, "values") and response.embedding.values:
+                    embedding = response.embedding.values
+                elif hasattr(response, "embeddings") and response.embeddings and hasattr(response.embeddings[0], "values"):
+                    embedding = response.embeddings[0].values
+                else:
+                    raise ValueError("Gemini embedding response missing embedding values")
+
+                self.model = candidate  # Update active model on success
+                return list(embedding)
+            except Exception as e:
+                last_error = e
+                if "404" in str(e) or "NOT_FOUND" in str(e):
+                    logger.warning(f"Gemini embedding model '{candidate}' not found (404), trying fallback candidate...")
+                    continue
+                raise RuntimeError(f"Gemini embedding API error: {str(e)}")
+
+        raise RuntimeError(f"Gemini embedding API error: {str(last_error)}")
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """
@@ -266,4 +280,5 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         except Exception as e:
             logger.warning(f"Gemini batch embedding API error, falling back to sequential embedding: {e}")
             return [self.embed(t) for t in texts]
+
 
