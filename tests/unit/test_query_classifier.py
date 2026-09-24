@@ -346,6 +346,49 @@ async def test_memory_recall_queries(classifier):
         assert res == QueryType.DOMAIN, f"Expected DOMAIN for domain query with overlapping words: '{q}', got {res}"
 
 
+@pytest.mark.asyncio
+async def test_user_requested_benchmark_cases(classifier, mock_llm_client):
+    """
+    Verifies all 8 user-requested classification benchmark test cases:
+    - 'I am raj' -> CONVERSATIONAL
+    - 'I like soccer' -> CONVERSATIONAL
+    - 'thanks' / 'ok' / 'who are you' -> CONVERSATIONAL
+    - 'What are the Component 1 specifications?' -> TECHNICAL (DOMAIN)
+    - 'What about the second one?' (follow-up after technical answer) -> TECHNICAL (DOMAIN)
+    - Follow-up 'and what's your favorite team?' after 'I like soccer' -> CONVERSATIONAL
+    """
+    # 1. Identity statement
+    assert await classifier.classify_query("I am raj") == QueryType.CONVERSATIONAL
+
+    # 2. Personal statement / preference
+    assert await classifier.classify_query("I like soccer") == QueryType.CONVERSATIONAL
+
+    # 3. Thanks / ok / identity question
+    assert await classifier.classify_query("thanks") == QueryType.CONVERSATIONAL
+    assert await classifier.classify_query("ok") == QueryType.CONVERSATIONAL
+    assert await classifier.classify_query("who are you") == QueryType.CONVERSATIONAL
+
+    # 4. Technical / document specification question
+    assert await classifier.classify_query("What are the Component 1 specifications?") == QueryType.DOMAIN
+
+    # 5. Technical follow-up query after a technical answer
+    tech_history = [
+        {"role": "user", "content": "What are the Component 1 specifications?"},
+        {"role": "assistant", "content": "Component 1 features dual noise-canceling microphones and Bluetooth 5.3."}
+    ]
+    assert await classifier.classify_query("What about the second one?", history_messages=tech_history) == QueryType.DOMAIN
+
+    # 6. Casual follow-up question after casual intro/preference
+    casual_history = [
+        {"role": "user", "content": "I am raj"},
+        {"role": "assistant", "content": "Hello Raj! How can I help you today?"},
+        {"role": "user", "content": "I like soccer"},
+        {"role": "assistant", "content": "Soccer is a great sport!"}
+    ]
+    assert await classifier.classify_query("and what's your favorite team?", history_messages=casual_history) == QueryType.CONVERSATIONAL
+
+
+
 
 
 
