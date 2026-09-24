@@ -161,9 +161,10 @@ class QueryClassifier:
             if enabled is not None
             else os.getenv("QUERY_CLASSIFIER_ENABLED", "true").lower() in ("true", "1", "yes")
         )
-        provider = os.getenv("LLM_PROVIDER", "ollama").lower()
-        default_model = os.getenv("GEMINI_MODEL", "gemini-3.6-flash") if provider in ("gemini", "google") else "qwen3:0.6b"
-        default_timeout = "6.0" if provider in ("gemini", "google") else "4.0"
+        provider_name = self.llm_client.provider.__class__.__name__.lower()
+        is_gemini = "gemini" in provider_name or bool(os.getenv("GEMINI_API_KEY"))
+        default_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite") if is_gemini else "qwen3:0.6b"
+        default_timeout = "6.0" if is_gemini else "4.0"
 
         self.model = model or os.getenv("QUERY_CLASSIFIER_MODEL", default_model)
         self.max_tokens = (
