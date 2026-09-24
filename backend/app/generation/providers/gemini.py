@@ -8,7 +8,7 @@ import os
 import time
 import logging
 from typing import Iterator, List, Dict, Any, Optional
-from backend.app.generation.providers.base import LLMProvider
+from backend.app.generation.providers.base import LLMProvider, EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
@@ -188,3 +188,82 @@ class GeminiProvider(LLMProvider):
                     backoff *= 2.0
                     continue
                 raise RuntimeError(f"Gemini streaming failed: {e}")
+
+
+class GeminiEmbeddingProvider(EmbeddingProvider):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        expected_dim: Optional[int] = None,
+    ):
+        if not GEMINI_AVAILABLE:
+            raise ImportError("The 'google-genai' package is required for GeminiEmbeddingProvider. Run 'pip install google-genai'.")
+
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY environment variable or parameter is required for GeminiEmbeddingProvider.")
+
+        self.model = model or os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+        self.expected_dim = expected_dim or int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+        self.client = genai.Client(api_key=self.api_key)
+
+    async def check_readiness(self) -> bool:
+        if not self.api_key:
+            return False
+        try:
+            return True
+        except Exception as e:
+            logger.warning(f"GeminiEmbeddingProvider readiness check failed: {e}")
+            return False
+
+    def embed(self, text: str) -> List[float]:
+        """
+        Generate embedding vector for a single string using Gemini text-embedding-004 API.
+        Outputs 1024 dimensions by default via EmbedContentConfig output_dimensionality.
+        """
+        if not text:
+            text = " "
+
+        try:
+            config = types.EmbedContentConfig(output_dimensionality=self.expected_dim) if types else None
+            response = self.client.models.embed_content(
+                model=self.model,
+                contents=text,
+                config=config,
+            )
+            if hasattr(response, "embedding") and hasattr(response.embedding, "values") and response.embedding.values:
+                embedding = response.embedding.values
+            elif hasattr(response, "embeddings") and response.embeddings and hasattr(response.embeddings[0], "values"):
+                embedding = response.embeddings[0].values
+            else:
+                raise ValueError("Gemini embedding response missing embedding values")
+
+            return list(embedding)
+        except Exception as e:
+            raise RuntimeError(f"Gemini embedding API error: {str(e)}")
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embedding vectors for a batch of strings using Gemini API.
+        """
+        if not texts:
+            return []
+
+        try:
+            config = types.EmbedContentConfig(output_dimensionality=self.expected_dim) if types else None
+            response = self.client.models.embed_content(
+                model=self.model,
+                contents=texts,
+                config=config,
+            )
+            if hasattr(response, "embeddings") and response.embeddings:
+                return [list(e.values) for e in response.embeddings if hasattr(e, "values")]
+            elif hasattr(response, "embedding") and hasattr(response.embedding, "values"):
+                return [list(response.embedding.values)]
+            else:
+                raise ValueError("Gemini batch embedding response missing embedding values")
+        except Exception as e:
+            logger.warning(f"Gemini batch embedding API error, falling back to sequential embedding: {e}")
+            return [self.embed(t) for t in texts]
+

@@ -65,3 +65,27 @@ def test_gemini_rate_limit_backoff(caplog, monkeypatch):
 
         assert "[GEMINI_RATE_LIMITED]" in str(exc_info.value)
         assert "[GEMINI_RATE_LIMITED]" in caplog.text
+
+
+@pytest.mark.skipif(not GEMINI_AVAILABLE, reason="google-genai package not installed")
+def test_gemini_embedding_provider_embed(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "dummy_key_for_testing")
+    from backend.app.generation.providers.gemini import GeminiEmbeddingProvider
+    from backend.app.generation.providers.factory import get_embedding_provider
+
+    provider = GeminiEmbeddingProvider(api_key="dummy_key_for_testing")
+
+    mock_resp = MagicMock()
+    mock_resp.embedding.values = [0.1] * 1024
+
+    with patch.object(provider.client.models, "embed_content", return_value=mock_resp) as mock_embed:
+        vec = provider.embed("I like football")
+        assert len(vec) == 1024
+        assert vec[0] == 0.1
+        mock_embed.assert_called_once()
+
+    # Test factory resolution for gemini embedding
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "gemini")
+    factory_provider = get_embedding_provider()
+    assert isinstance(factory_provider, GeminiEmbeddingProvider)
+

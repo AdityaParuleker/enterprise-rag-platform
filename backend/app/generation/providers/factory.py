@@ -22,7 +22,21 @@ def get_llm_provider() -> LLMProvider:
 
 def get_embedding_provider() -> EmbeddingProvider:
     provider_type = os.getenv("EMBEDDING_PROVIDER", "ollama").lower()
-    if provider_type in ("ollama", "bge-large"):
+    if provider_type in ("gemini", "google"):
+        from backend.app.generation.providers.gemini import GeminiEmbeddingProvider
+        return GeminiEmbeddingProvider()
+    elif provider_type in ("ollama", "bge-large"):
+        # Auto-fallback to Gemini embedding in cloud production if GEMINI_API_KEY is available
+        # and OLLAMA_BASE_URL is default localhost (where Ollama service is unavailable)
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        if gemini_key and ("localhost" in ollama_url or "127.0.0.1" in ollama_url):
+            try:
+                from backend.app.generation.providers.gemini import GeminiEmbeddingProvider
+                return GeminiEmbeddingProvider()
+            except Exception:
+                pass
+
         return OllamaEmbeddingProvider()
     raise ValueError(f"Unsupported EMBEDDING_PROVIDER: '{provider_type}'")
 
@@ -30,7 +44,6 @@ def get_embedding_provider() -> EmbeddingProvider:
 def validate_provider_configs() -> None:
     """
     Fail-fast startup validation for LLM and Embedding providers.
-    Uses separate allow-lists to ensure unsupported providers (e.g. gemini embeddings) fail loudly at worker boot.
     """
     llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
     allowed_llm = {"ollama", "gemini", "google"}
@@ -40,10 +53,11 @@ def validate_provider_configs() -> None:
         )
 
     embedding_provider = os.getenv("EMBEDDING_PROVIDER", "ollama").lower()
-    allowed_embedding = {"ollama", "bge-large"}
+    allowed_embedding = {"ollama", "bge-large", "gemini", "google"}
     if embedding_provider not in allowed_embedding:
         raise ValueError(
             f"Invalid EMBEDDING_PROVIDER '{embedding_provider}'. Supported EMBEDDING providers: {sorted(list(allowed_embedding))}"
         )
+
 
 
