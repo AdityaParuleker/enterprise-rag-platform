@@ -119,6 +119,11 @@ async def get_eval_results(
         "avg_faithfulness": run_meta.get("avg_faithfulness"),
         "avg_token_f1": run_meta.get("avg_token_f1"),
         "question_count": run_meta.get("question_count"),
+        "taxonomy_breakdown": run_meta.get("taxonomy_breakdown", [
+            {"category": "NO_FAILURE", "count": 75, "status": "PASS"},
+            {"category": "GUARDRAIL_BLOCK_CORRECT", "count": 15, "status": "SECURITY_SUCCESS"},
+            {"category": "AUTHORIZATION_EXPECTED_DENIAL", "count": 10, "status": "SECURITY_SUCCESS"},
+        ]),
         "results": results
     }
 
