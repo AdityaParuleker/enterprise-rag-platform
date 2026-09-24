@@ -30,19 +30,21 @@ YES
 or
 NO
 
-YES means the message is purely social/conversational, such as:
-greetings, small talk, chit-chat, self-introductions, pleasantries,
-thank-you messages, acknowledgements, or farewells.
+YES means the message is purely social, conversational, casual, or personal, such as:
+greetings, small talk, chit-chat, personal preferences (e.g., "I like football", "I love coffee"),
+hobbies, opinions, feelings, self-introductions, pleasantries, thank-you messages,
+acknowledgements, or farewells.
 
 NO means the message is a technical, enterprise, domain, documentation,
 knowledge-base, configuration, policy, or information request, or anything
 that may require retrieving information from the knowledge base.
 
-If a message contains both a conversational greeting and a substantive
+If a message contains both a conversational statement and a substantive
 domain question, return NO.
 
 Do NOT include thinking tags (<think>...</think>), reasoning, or explanations.
 Return ONLY YES or NO."""
+
 
 
 def parse_binary_response(raw_response: str) -> Optional[QueryType]:

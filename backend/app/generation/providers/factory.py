@@ -11,13 +11,24 @@ from backend.app.generation.providers.ollama import OllamaProvider, OllamaEmbedd
 
 def get_llm_provider() -> LLMProvider:
     provider_type = os.getenv("LLM_PROVIDER", "ollama").lower()
-    if provider_type == "ollama":
-        return OllamaProvider()
-    elif provider_type in ("gemini", "google"):
+    if provider_type in ("gemini", "google"):
         from backend.app.generation.providers.gemini import GeminiProvider
         return GeminiProvider()
+    elif provider_type == "ollama":
+        # Auto-fallback to Gemini LLM in cloud production if GEMINI_API_KEY is available
+        # and OLLAMA_BASE_URL is default localhost (where Ollama service is unavailable)
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        if gemini_key and ("localhost" in ollama_url or "127.0.0.1" in ollama_url):
+            try:
+                from backend.app.generation.providers.gemini import GeminiProvider
+                return GeminiProvider()
+            except Exception:
+                pass
+        return OllamaProvider()
     
     raise ValueError(f"Unsupported LLM_PROVIDER: '{provider_type}'")
+
 
 
 def get_embedding_provider() -> EmbeddingProvider:
