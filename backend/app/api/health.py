@@ -82,13 +82,12 @@ async def _check_redis() -> bool:
 
 async def _check_minio() -> bool:
     try:
-        endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
-        url = f"{endpoint.rstrip('/')}/minio/health/live"
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            res = await client.get(url)
-            return res.status_code == 200
+        from backend.app.storage.minio_client import get_minio_storage
+        storage = get_minio_storage()
+        return await asyncio.to_thread(storage.client.bucket_exists, storage.bucket_name)
     except Exception:
         return False
+
 
 
 async def _check_llm_provider() -> bool:
