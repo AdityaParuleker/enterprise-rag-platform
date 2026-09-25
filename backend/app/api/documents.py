@@ -490,17 +490,22 @@ async def delete_document(
             # Delete chunks associated with document
             await conn.execute("DELETE FROM chunks WHERE document_id = $1", doc_uuid)
 
-        # Celery Task Revocation (human audit item 10)
-        for job_id_str in job_ids_to_revoke:
-            try:
-                celery_app.control.revoke(job_id_str, terminate=True)
-            except Exception:
-                pass
+        # Offload external cleanup (Celery task revocation & remote object storage deletion) to async background task
+        async def _async_external_cleanup():
+            for job_id_str in job_ids_to_revoke:
+                try:
+                    celery_app.control.revoke(job_id_str, terminate=True)
+                except Exception:
+                    pass
+            if storage_key:
+                try:
+                    storage = get_minio_storage()
+                    await storage.delete_file(storage_key)
+                except Exception as s3_err:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Storage cleanup warning for '{storage_key}': {s3_err}")
 
-        # Delete object from MinIO storage
-        if storage_key:
-            storage = get_minio_storage()
-            await storage.delete_file(storage_key)
+        asyncio.create_task(_async_external_cleanup())
 
         return {
             "data": {
@@ -510,6 +515,7 @@ async def delete_document(
             "error": None,
             "request_id": req_id
         }
+
     finally:
         await conn.close()
 

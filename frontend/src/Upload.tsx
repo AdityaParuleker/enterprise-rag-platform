@@ -184,18 +184,43 @@ export const Upload: React.FC = () => {
   };
 
   const handleDelete = async (docId: string) => {
+    // Optimistic UI update: Remove document immediately from table for instant sub-50ms feedback
+    const previousDocs = [...documents];
+    const updated = documents.filter((d) => d.id !== docId);
+    saveDocumentsToCache(updated);
+
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      await fetch(getApiUrl(`/api/v1/documents/${docId}`), {
+      const token = await ensureValidToken();
+      let response = await fetch(getApiUrl(`/api/v1/documents/${docId}`), {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-    } catch (e) {
-      // Proceed
+
+      if (response.status === 401) {
+        const refreshedToken = await refreshAccessToken();
+        if (refreshedToken) {
+          response = await fetch(getApiUrl(`/api/v1/documents/${docId}`), {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${refreshedToken}` }
+          });
+        }
+      }
+
+      if (!response.ok) {
+        // Rollback UI on server error
+        saveDocumentsToCache(previousDocs);
+        const errJson = await response.json().catch(() => ({}));
+        showToast('Delete Failed', errJson.detail || 'Could not delete document.', 'error');
+      } else {
+        showToast('Document Deleted', 'Document removed successfully.', 'success');
+      }
+    } catch (e: any) {
+      // Rollback UI on network error
+      saveDocumentsToCache(previousDocs);
+      showToast('Delete Error', e.message || 'Failed to delete document.', 'error');
     }
-    const updated = documents.filter((d) => d.id !== docId);
-    saveDocumentsToCache(updated);
   };
+
 
   const handleRetry = async (docId: string) => {
     try {
