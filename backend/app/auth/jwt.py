@@ -27,9 +27,10 @@ def get_jwt_algorithm() -> str:
 
 def get_access_token_expire_minutes() -> int:
     try:
-        return int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+        return int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
     except ValueError:
-        return 15
+        return 30
+
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

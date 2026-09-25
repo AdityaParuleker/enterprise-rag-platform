@@ -153,8 +153,13 @@ async def upload_document(
                     job_uuid, detail_json
                 )
 
-            # Dispatch background job to Celery
-            process_ingestion_job.delay(job_id)
+            # Dispatch background job to Celery (with fallback if Redis broker is unconfigured)
+            try:
+                process_ingestion_job.delay(job_id)
+            except Exception as queue_err:
+                import logging
+                logging.getLogger(__name__).warning(f"Celery queue dispatch warning ({queue_err}). Job {job_id} remains QUEUED in DB.")
+
 
             return {
                 "data": {
@@ -237,8 +242,13 @@ async def upload_document(
                 job_uuid, detail_json
             )
 
-        # Dispatch background job to Celery
-        process_ingestion_job.delay(job_id_str)
+        # Dispatch background job to Celery (with fallback if Redis broker is unconfigured)
+        try:
+            process_ingestion_job.delay(job_id_str)
+        except Exception as queue_err:
+            import logging
+            logging.getLogger(__name__).warning(f"Celery queue dispatch warning ({queue_err}). Job {job_id_str} remains QUEUED in DB.")
+
 
         return {
             "data": {

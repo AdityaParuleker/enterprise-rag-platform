@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getApiUrl } from './config';
+import { getApiUrl, ensureValidToken, refreshAccessToken } from './config';
 
 interface DocItem {
   id: string;
@@ -62,7 +62,7 @@ export const Upload: React.FC = () => {
 
   const fetchDocuments = async () => {
     try {
-      const token = localStorage.getItem('auth_token') || '';
+      const token = await ensureValidToken();
       const response = await fetch(getApiUrl('/api/v1/documents'), {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -119,12 +119,26 @@ export const Upload: React.FC = () => {
     formData.append('file', selectedFile);
 
     try {
-      const token = localStorage.getItem('auth_token') || '';
-      const response = await fetch(getApiUrl('/api/v1/documents'), {
+      let token = await ensureValidToken();
+      let response = await fetch(getApiUrl('/api/v1/documents'), {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData
       });
+
+      // Resilience: If 401 Unauthorized received, attempt ONE silent token refresh & retry upload
+      if (response.status === 401) {
+        const refreshedToken = await refreshAccessToken();
+        if (refreshedToken) {
+          const retryFormData = new FormData();
+          retryFormData.append('file', selectedFile);
+          response = await fetch(getApiUrl('/api/v1/documents'), {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${refreshedToken}` },
+            body: retryFormData
+          });
+        }
+      }
 
       if (!response.ok) {
         if (response.status === 401) {
@@ -136,6 +150,7 @@ export const Upload: React.FC = () => {
           : (errData.message || 'Upload failed. Please check server connection.');
         throw new Error(msg);
       }
+
 
       const resJson = await response.json();
       const payload = resJson.data || resJson;

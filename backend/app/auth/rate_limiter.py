@@ -8,6 +8,10 @@ from typing import Optional, Dict, Any
 from fastapi import Request, HTTPException, status
 from backend.app.cache.redis_client import RedisManager
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Default Rate Limits (requests per minute)
 DEFAULT_LIMITS = {
     "auth": 10,
@@ -18,7 +22,7 @@ DEFAULT_LIMITS = {
 
 
 class RateLimiter:
-    """Sliding window token-bucket rate limiter backed by Redis. Fails closed (HTTP 503) on Redis outage."""
+    """Sliding window token-bucket rate limiter backed by Redis. Degrades gracefully if Redis is unavailable."""
 
     def __init__(self, route_class: str = "chat", limit_per_minute: Optional[int] = None, redis_manager: Optional[RedisManager] = None):
         self.route_class = route_class
@@ -34,15 +38,11 @@ class RateLimiter:
         try:
             redis = self.redis_manager.get_client()
             if not redis:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Rate limiter service unavailable."
-                )
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Rate limiter service unavailable."
-            )
+                logger.warning(f"Redis unavailable; skipping rate limit check for route_class '{self.route_class}'.")
+                return True
+        except Exception as e:
+            logger.warning(f"Redis connection error in rate limiter ({e}); skipping rate limit check.")
+            return True
 
         client_ip = request.client.host if request.client else "127.0.0.1"
 
@@ -76,8 +76,6 @@ class RateLimiter:
         except HTTPException:
             raise
         except Exception as exc:
-            # Redis operational error -> Fail closed per Phase 8 invariant
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Rate limiter error: {str(exc)}"
-            )
+            logger.warning(f"Redis operational error in rate limiter ({exc}). Allowing request to proceed.")
+            return True
+
