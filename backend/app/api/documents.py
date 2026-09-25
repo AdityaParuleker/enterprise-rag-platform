@@ -24,6 +24,30 @@ def _get_request_id(request: Request) -> str:
     return getattr(request.state, "request_id", str(uuid.uuid4()))
 
 
+def _dispatch_ingestion_job(job_id_str: str):
+    import asyncio
+    import logging
+    logger = logging.getLogger(__name__)
+
+    # 1. Dispatch to Celery broker (for dedicated Celery worker containers)
+    try:
+        process_ingestion_job.delay(job_id_str)
+    except Exception as queue_err:
+        logger.warning(f"Celery queue dispatch warning ({queue_err}).")
+
+    # 2. Dual-dispatch to in-process asyncio task (ensures live processing on web service)
+    async def _async_run():
+        try:
+            from backend.app.ingestion.pipeline import IngestionPipeline
+            pipeline = IngestionPipeline()
+            await pipeline.process_job(job_id_str)
+        except Exception as err:
+            logger.error(f"In-process background ingestion error for job {job_id_str}: {err}")
+
+    asyncio.create_task(_async_run())
+
+
+
 @router.post("")
 async def upload_document(
     request: Request,
@@ -153,12 +177,9 @@ async def upload_document(
                     job_uuid, detail_json
                 )
 
-            # Dispatch background job to Celery (with fallback if Redis broker is unconfigured)
-            try:
-                process_ingestion_job.delay(job_id)
-            except Exception as queue_err:
-                import logging
-                logging.getLogger(__name__).warning(f"Celery queue dispatch warning ({queue_err}). Job {job_id} remains QUEUED in DB.")
+            # Dual-dispatch background job (Celery queue + in-process background worker)
+            _dispatch_ingestion_job(str(job_id))
+
 
 
             return {
@@ -242,12 +263,9 @@ async def upload_document(
                 job_uuid, detail_json
             )
 
-        # Dispatch background job to Celery (with fallback if Redis broker is unconfigured)
-        try:
-            process_ingestion_job.delay(job_id_str)
-        except Exception as queue_err:
-            import logging
-            logging.getLogger(__name__).warning(f"Celery queue dispatch warning ({queue_err}). Job {job_id_str} remains QUEUED in DB.")
+        # Dual-dispatch background job (Celery queue + in-process background worker)
+        _dispatch_ingestion_job(job_id_str)
+
 
 
         return {
