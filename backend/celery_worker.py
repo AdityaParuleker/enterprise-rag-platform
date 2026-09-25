@@ -25,18 +25,22 @@ from backend.app.ingestion.pipeline import IngestionPipeline, NonRetryableIngest
 
 logger = logging.getLogger(__name__)
 
-redis_host = os.getenv("REDIS_HOST", "localhost")
-redis_port = os.getenv("REDIS_PORT", "6379")
-redis_password = os.getenv("REDIS_PASSWORD", "")
-auth_str = f":{redis_password}@" if redis_password else ""
-
-broker_url = f"redis://{auth_str}{redis_host}:{redis_port}/0"
+redis_url = os.getenv("REDIS_URL")
+if redis_url:
+    broker_url = redis_url
+else:
+    redis_host = os.getenv("REDIS_HOST", "localhost")
+    redis_port = os.getenv("REDIS_PORT", "6379")
+    redis_password = os.getenv("REDIS_PASSWORD", "")
+    auth_str = f":{redis_password}@" if redis_password else ""
+    broker_url = f"redis://{auth_str}{redis_host}:{redis_port}/0"
 
 celery_app = Celery(
     "ekp_tasks",
     broker=broker_url,
     backend=broker_url,
 )
+
 
 celery_app.conf.update(
     task_serializer="json",

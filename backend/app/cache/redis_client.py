@@ -12,10 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 class RedisManager:
-    """Manager for async Redis connections with graceful cloud degradation."""
+    """Manager for async Redis connections with graceful cloud degradation and REDIS_URL/TLS support."""
 
-    def __init__(self, host: Optional[str] = None, port: Optional[str] = None, password: Optional[str] = None):
+    def __init__(
+        self,
+        redis_url: Optional[str] = None,
+        host: Optional[str] = None,
+        port: Optional[str] = None,
+        password: Optional[str] = None,
+    ):
+        env_url = redis_url or os.getenv("REDIS_URL")
         raw_host = host or os.getenv("REDIS_HOST")
+
         is_cloud = bool(
             os.getenv("RENDER")
             or os.getenv("VERCEL")
@@ -23,33 +31,40 @@ class RedisManager:
             or os.getenv("ENV") == "production"
         )
 
-        if is_cloud and (not raw_host or raw_host in ("localhost", "127.0.0.1")):
+        if env_url:
+            self.redis_url = env_url
+            self.is_available = True
+        elif is_cloud and (not raw_host or raw_host in ("localhost", "127.0.0.1")):
             logger.warning(
-                "Redis not configured for cloud deployment (REDIS_HOST is unset or localhost). "
+                "Redis not configured for cloud deployment (REDIS_URL and REDIS_HOST are unset or localhost). "
                 "Redis features (rate-limiting, turn caching) will degrade gracefully."
             )
-            self.host = None
-            self.port = None
-            self.password = None
+            self.redis_url = None
             self.is_available = False
         else:
-            self.host = raw_host or "localhost"
-            self.port = port or os.getenv("REDIS_PORT", "6379")
-            self.password = password or os.getenv("REDIS_PASSWORD", None)
+            host_val = raw_host or "localhost"
+            port_val = port or os.getenv("REDIS_PORT", "6379")
+            pass_val = password or os.getenv("REDIS_PASSWORD", "")
+            auth_str = f":{pass_val}@" if pass_val else ""
+            self.redis_url = f"redis://{auth_str}{host_val}:{port_val}"
             self.is_available = True
 
         self._client: Optional[Redis] = None
 
     def get_client(self) -> Optional[Redis]:
-        if not self.is_available or not self.host:
+        if not self.is_available or not self.redis_url:
             return None
         if self._client is None:
-            url = f"redis://{self.host}:{self.port}"
-            self._client = Redis.from_url(url, password=self.password, socket_timeout=3.0, decode_responses=True)
+            self._client = Redis.from_url(
+                self.redis_url,
+                socket_timeout=3.0,
+                decode_responses=True,
+            )
         return self._client
 
     async def close(self):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
 
