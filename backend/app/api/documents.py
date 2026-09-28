@@ -645,9 +645,9 @@ async def retry_document(
                 new_job_uuid, detail_json
             )
 
-        # Dispatch task to Celery
+        # Dispatch background job (ARQ queue + in-process worker)
         if new_job_id_str:
-            process_ingestion_job.delay(new_job_id_str)
+            _dispatch_ingestion_job(new_job_id_str)
 
         return {
             "data": {

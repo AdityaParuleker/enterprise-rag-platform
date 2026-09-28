@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { getApiUrl, ensureValidToken, refreshAccessToken } from './config';
 
 interface DocItem {
@@ -47,7 +47,12 @@ export const Upload: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [toastMessage, setToastMessage] = useState<{ title: string; body: string; type: 'warning' | 'success' | 'error' } | null>(null);
-  const [targetDocForVersion, setTargetDocForVersion] = useState<DocItem | null>(null);
+
+  const versionFileInputRef = useRef<HTMLInputElement>(null);
+  const [activeVersionDoc, setActiveVersionDoc] = useState<DocItem | null>(null);
+  const [versionUploadingDocId, setVersionUploadingDocId] = useState<string | null>(null);
+  const abortControllersRef = useRef<{ [docId: string]: AbortController }>({});
+
   const showToast = (title: string, body: string, type: 'warning' | 'success' | 'error' = 'warning') => {
     setToastMessage({ title, body, type });
     setTimeout(() => {
@@ -118,9 +123,6 @@ export const Upload: React.FC = () => {
     const formData = new FormData();
     formData.append('file', selectedFile);
 
-    if (targetDocForVersion) {
-      formData.append('document_id', targetDocForVersion.id);
-    }
     try {
       let token = await ensureValidToken();
       let response = await fetch(getApiUrl('/api/v1/documents'), {
@@ -183,7 +185,98 @@ export const Upload: React.FC = () => {
       setSelectedFile(null);
     } finally {
       setUploading(false);
-      setTargetDocForVersion(null);
+    }
+  };
+
+  const triggerVersionUpload = (doc: DocItem) => {
+    setActiveVersionDoc(doc);
+    if (versionFileInputRef.current) {
+      versionFileInputRef.current.value = '';
+      versionFileInputRef.current.click();
+    }
+  };
+
+  const handleVersionFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || !e.target.files[0] || !activeVersionDoc) return;
+    const file = e.target.files[0];
+    const targetDoc = activeVersionDoc;
+
+    setVersionUploadingDocId(targetDoc.id);
+    const controller = new AbortController();
+    abortControllersRef.current[targetDoc.id] = controller;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('document_id', targetDoc.id);
+
+    try {
+      let token = await ensureValidToken();
+      let response = await fetch(getApiUrl('/api/v1/documents'), {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData,
+        signal: controller.signal
+      });
+
+      if (response.status === 401) {
+        const refreshedToken = await refreshAccessToken();
+        if (refreshedToken) {
+          const retryFormData = new FormData();
+          retryFormData.append('file', file);
+          retryFormData.append('document_id', targetDoc.id);
+          response = await fetch(getApiUrl('/api/v1/documents'), {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${refreshedToken}` },
+            body: retryFormData,
+            signal: controller.signal
+          });
+        }
+      }
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Authentication token expired or invalid. Please sign in again.');
+        }
+        const errData = await response.json().catch(() => ({}));
+        const msg = typeof errData.detail === 'string'
+          ? errData.detail
+          : (errData.message || 'Version upload failed.');
+        throw new Error(msg);
+      }
+
+      const resJson = await response.json();
+      const payload = resJson.data || resJson;
+
+      if (payload.deduplicated) {
+        showToast(
+          'Identical Version',
+          `The document "${file.name}" has identical content hash. Version creation skipped.`,
+          'warning'
+        );
+      } else {
+        showToast(
+          'Version Uploaded',
+          `Uploaded version v${targetDoc.version + 1} for "${targetDoc.filename}". Queued for ingestion.`,
+          'success'
+        );
+      }
+      await fetchDocuments();
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        showToast('Upload Cancelled', `Version upload for "${targetDoc.filename}" was cancelled.`, 'warning');
+      } else {
+        showToast('Version Upload Error', err.message || 'Failed to upload new version', 'error');
+      }
+    } finally {
+      delete abortControllersRef.current[targetDoc.id];
+      setVersionUploadingDocId(null);
+      setActiveVersionDoc(null);
+    }
+  };
+
+  const handleCancelVersionUpload = (docId: string) => {
+    if (abortControllersRef.current[docId]) {
+      abortControllersRef.current[docId].abort();
     }
   };
 
@@ -248,6 +341,15 @@ export const Upload: React.FC = () => {
 
   return (
     <div className="doc-grid" style={{ position: 'relative' }}>
+      {/* Hidden file input for inline row versioning */}
+      <input
+        ref={versionFileInputRef}
+        type="file"
+        onChange={handleVersionFileSelected}
+        style={{ display: 'none' }}
+        accept=".pdf,.docx,.md,.html,.csv,.txt"
+      />
+
       {/* Toast Popup Notification */}
       {toastMessage && (
         <div style={{
@@ -327,16 +429,6 @@ export const Upload: React.FC = () => {
           >
             {uploading ? 'Processing Ingestion State Machine...' : 'Upload & Index Document'}
           </button>
-          {targetDocForVersion && (
-            <div style={{ background: 'var(--bg-card)', padding: '0.5rem 1rem', borderRadius: '6px', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>
-                Uploading <strong>v{targetDocForVersion.version + 1}</strong> for: <em>{targetDocForVersion.filename}</em>
-              </span>
-              <button type="button" className="btn-secondary" onClick={() => setTargetDocForVersion(null)}>
-                Cancel Versioning
-              </button>
-            </div>
-          )}
         </form>
 
         <div style={{ marginTop: '1.25rem', fontSize: '0.78rem', color: 'var(--text-subtle)', lineHeight: 1.6, background: 'var(--bg-input)', padding: '0.75rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
@@ -407,13 +499,24 @@ export const Upload: React.FC = () => {
                             Retry
                           </button>
                         )}
-                        <button
-                          className="btn-secondary"
-                          style={{ padding: '0.2rem 0.5rem', fontSize: '0.73rem', color: 'var(--accent-cyan)' }}
-                          onClick={() => setTargetDocForVersion(doc)}
-                        >
-                          New Version
-                        </button>
+                        {versionUploadingDocId === doc.id ? (
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.73rem', color: 'var(--accent-rose)', borderColor: 'var(--accent-rose)' }}
+                            onClick={() => handleCancelVersionUpload(doc.id)}
+                          >
+                            Cancel Upload
+                          </button>
+                        ) : (
+                          <button
+                            className="btn-secondary"
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '0.73rem', color: 'var(--accent-cyan)' }}
+                            onClick={() => triggerVersionUpload(doc)}
+                            disabled={versionUploadingDocId !== null}
+                          >
+                            New Version
+                          </button>
+                        )}
                         <button
                           className="btn-secondary"
                           style={{ padding: '0.2rem 0.5rem', fontSize: '0.73rem', color: 'var(--accent-rose)' }}
@@ -433,3 +536,4 @@ export const Upload: React.FC = () => {
     </div>
   );
 };
+
