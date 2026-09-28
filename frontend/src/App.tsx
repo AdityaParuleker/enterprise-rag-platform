@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getApiUrl } from './config';
 import { Login } from './Login';
 import { Chat } from './Chat';
 import { Upload } from './Upload';
@@ -23,7 +24,29 @@ export const App: React.FC = () => {
     localStorage.setItem('active_tab', tab);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    const refreshToken = localStorage.getItem('refresh_token');
+    const authToken = localStorage.getItem('auth_token');
+
+    if (refreshToken) {
+      try {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json'
+        };
+        if (authToken) {
+          headers['Authorization'] = `Bearer ${authToken}`;
+        }
+
+        await fetch(getApiUrl('/api/v1/auth/logout'), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+      } catch (e) {
+        // Ignore network errors during logout
+      }
+    }
+
     localStorage.removeItem('auth_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('tenant_id');
@@ -36,6 +59,7 @@ export const App: React.FC = () => {
     setTenantId(null);
     setUserEmail(null);
   };
+
 
   useEffect(() => {
     const savedToken = localStorage.getItem('auth_token');
