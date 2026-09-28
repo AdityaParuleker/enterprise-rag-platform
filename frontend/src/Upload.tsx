@@ -40,14 +40,14 @@ export const Upload: React.FC = () => {
       try {
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed)) return parsed;
-      } catch (e) {}
+      } catch (e) { }
     }
     return [];
   });
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [toastMessage, setToastMessage] = useState<{ title: string; body: string; type: 'warning' | 'success' | 'error' } | null>(null);
-
+  const [targetDocForVersion, setTargetDocForVersion] = useState<DocItem | null>(null);
   const showToast = (title: string, body: string, type: 'warning' | 'success' | 'error' = 'warning') => {
     setToastMessage({ title, body, type });
     setTimeout(() => {
@@ -118,6 +118,9 @@ export const Upload: React.FC = () => {
     const formData = new FormData();
     formData.append('file', selectedFile);
 
+    if (targetDocForVersion) {
+      formData.append('document_id', targetDocForVersion.id);
+    }
     try {
       let token = await ensureValidToken();
       let response = await fetch(getApiUrl('/api/v1/documents'), {
@@ -180,6 +183,7 @@ export const Upload: React.FC = () => {
       setSelectedFile(null);
     } finally {
       setUploading(false);
+      setTargetDocForVersion(null);
     }
   };
 
@@ -323,6 +327,16 @@ export const Upload: React.FC = () => {
           >
             {uploading ? 'Processing Ingestion State Machine...' : 'Upload & Index Document'}
           </button>
+          {targetDocForVersion && (
+            <div style={{ background: 'var(--bg-card)', padding: '0.5rem 1rem', borderRadius: '6px', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>
+                Uploading <strong>v{targetDocForVersion.version + 1}</strong> for: <em>{targetDocForVersion.filename}</em>
+              </span>
+              <button type="button" className="btn-secondary" onClick={() => setTargetDocForVersion(null)}>
+                Cancel Versioning
+              </button>
+            </div>
+          )}
         </form>
 
         <div style={{ marginTop: '1.25rem', fontSize: '0.78rem', color: 'var(--text-subtle)', lineHeight: 1.6, background: 'var(--bg-input)', padding: '0.75rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
@@ -393,6 +407,13 @@ export const Upload: React.FC = () => {
                             Retry
                           </button>
                         )}
+                        <button
+                          className="btn-secondary"
+                          style={{ padding: '0.2rem 0.5rem', fontSize: '0.73rem', color: 'var(--accent-cyan)' }}
+                          onClick={() => setTargetDocForVersion(doc)}
+                        >
+                          New Version
+                        </button>
                         <button
                           className="btn-secondary"
                           style={{ padding: '0.2rem 0.5rem', fontSize: '0.73rem', color: 'var(--accent-rose)' }}
