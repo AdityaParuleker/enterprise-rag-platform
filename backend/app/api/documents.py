@@ -15,7 +15,6 @@ from backend.app.auth.rbac import get_current_user, require_permission
 from backend.app.db.connection import get_db_connection
 from backend.app.storage.minio_client import get_minio_storage
 from backend.app.ingestion.security import IngestionSecurityValidator, SecurityValidationError
-from backend.celery_worker import celery_app, process_ingestion_job
 
 router = APIRouter(prefix="/api/v1/documents", tags=["Documents"])
 validator = IngestionSecurityValidator()
@@ -30,11 +29,18 @@ def _dispatch_ingestion_job(job_id_str: str):
     import logging
     logger = logging.getLogger(__name__)
 
-    # 1. Dispatch to Celery broker (for dedicated Celery worker containers)
-    try:
-        process_ingestion_job.delay(job_id_str)
-    except Exception as queue_err:
-        logger.warning(f"Celery queue dispatch warning ({queue_err}).")
+    # 1. Dispatch to ARQ queue (for dedicated ARQ worker containers)
+    async def _arq_enqueue():
+        try:
+            from arq import create_pool
+            from backend.arq_worker import get_redis_settings
+            redis_pool = await create_pool(get_redis_settings())
+            await redis_pool.enqueue_job("process_ingestion_job", job_id_str, _job_id=job_id_str)
+            await redis_pool.close()
+        except Exception as queue_err:
+            logger.warning(f"ARQ queue dispatch warning ({queue_err}).")
+
+    asyncio.create_task(_arq_enqueue())
 
     # 2. Dual-dispatch to in-process asyncio task (ensures live processing on web service)
     async def _async_run():
@@ -491,13 +497,8 @@ async def delete_document(
             # Delete chunks associated with document
             await conn.execute("DELETE FROM chunks WHERE document_id = $1", doc_uuid)
 
-        # Offload external cleanup (Celery task revocation & remote object storage deletion) to async background task
+        # Offload external cleanup (remote object storage deletion) to async background task
         async def _async_external_cleanup():
-            for job_id_str in job_ids_to_revoke:
-                try:
-                    celery_app.control.revoke(job_id_str, terminate=True)
-                except Exception:
-                    pass
             if storage_key:
                 try:
                     storage = get_minio_storage()
@@ -609,17 +610,6 @@ async def retry_document(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Document ingestion is actively running or queued (status: {doc['status']}). Cannot retry active job."
                 )
-
-            # Revoke any prior pending celery tasks
-            active_jobs = await conn.fetch(
-                "SELECT id FROM ingestion_jobs WHERE document_id = $1 AND status NOT IN ('COMPLETED', 'FAILED')",
-                doc_uuid
-            )
-            for j in active_jobs:
-                try:
-                    celery_app.control.revoke(str(j["id"]), terminate=True)
-                except Exception:
-                    pass
 
             # Update existing active jobs to CANCELLED
             await conn.execute(

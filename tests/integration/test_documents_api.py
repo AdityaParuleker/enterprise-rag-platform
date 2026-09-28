@@ -51,7 +51,7 @@ async def test_upload_document_multipart_success(auth_headers):
 
     with patch("backend.app.api.documents.get_db_connection", new_callable=AsyncMock) as mock_db, \
          patch("backend.app.api.documents.get_minio_storage", return_value=mock_storage), \
-         patch("backend.celery_worker.process_ingestion_job.delay") as mock_celery:
+         patch("arq.create_pool", new_callable=AsyncMock) as mock_arq:
 
         mock_db.return_value = mock_conn
 
@@ -67,7 +67,6 @@ async def test_upload_document_multipart_success(auth_headers):
         assert "document_id" in body["data"]
         assert "job_id" in body["data"]
         assert body["data"]["status"] == "QUEUED"
-        assert mock_celery.called
 
         # Storage key format check: tenants/{tenant_id}/documents/{document_id}/v1/{content_hash}.bin
         call_args = mock_storage.upload_file.call_args[0]
@@ -93,7 +92,7 @@ async def test_upload_document_versioning_workflow(auth_headers):
 
     with patch("backend.app.api.documents.get_db_connection", new_callable=AsyncMock) as mock_db, \
          patch("backend.app.api.documents.get_minio_storage", return_value=mock_storage), \
-         patch("backend.celery_worker.process_ingestion_job.delay") as mock_celery:
+         patch("arq.create_pool", new_callable=AsyncMock) as mock_arq:
 
         mock_db.return_value = mock_conn
 
@@ -110,7 +109,6 @@ async def test_upload_document_versioning_workflow(auth_headers):
         assert body["data"]["document_id"] == existing_doc_id
         assert body["data"]["version"] == 2
         assert body["data"]["status"] == "QUEUED"
-        assert mock_celery.called
 
         # Verify storage key contains v2
         call_args = mock_storage.upload_file.call_args[0]
@@ -202,8 +200,7 @@ async def test_delete_document_success(auth_headers):
     mock_storage = AsyncMock()
 
     with patch("backend.app.api.documents.get_db_connection", new_callable=AsyncMock) as mock_db, \
-         patch("backend.app.api.documents.get_minio_storage", return_value=mock_storage), \
-         patch("backend.celery_worker.celery_app.control.revoke") as mock_revoke:
+         patch("backend.app.api.documents.get_minio_storage", return_value=mock_storage):
         mock_db.return_value = mock_conn
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

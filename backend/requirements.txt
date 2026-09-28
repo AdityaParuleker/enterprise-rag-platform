@@ -1,7 +1,7 @@
 # Phase 1 Baseline & Runtime Scaffold Dependencies
 fastapi==0.110.0
 uvicorn[standard]==0.28.0
-celery==5.3.6
+arq==0.28.0
 
 # Phase 1 Connectivity & Testing Dependencies (Documented in TRACEABILITY.md)
 asyncpg==0.29.0
