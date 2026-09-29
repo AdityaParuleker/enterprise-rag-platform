@@ -188,6 +188,19 @@ export const Upload: React.FC = () => {
     }
   };
 
+  const getExt = (name: string): string => {
+    const parts = name.split('.');
+    return parts.length > 1 ? `.${parts.pop()!.toLowerCase()}` : '';
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const [versionWarningModal, setVersionWarningModal] = useState<{ targetDoc: DocItem; file: File; warnings: string[] } | null>(null);
+
   const triggerVersionUpload = (doc: DocItem) => {
     setActiveVersionDoc(doc);
     if (versionFileInputRef.current) {
@@ -196,11 +209,35 @@ export const Upload: React.FC = () => {
     }
   };
 
-  const handleVersionFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleVersionFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0] || !activeVersionDoc) return;
     const file = e.target.files[0];
     const targetDoc = activeVersionDoc;
 
+    const warnings: string[] = [];
+
+    // 1. Check Extension Mismatch
+    const oldExt = getExt(targetDoc.filename);
+    const newExt = getExt(file.name);
+    if (oldExt && newExt && oldExt !== newExt) {
+      warnings.push(`File extension mismatch: Existing version is ${oldExt.toUpperCase()}, but selected file is ${newExt.toUpperCase()}.`);
+    }
+
+    // 2. Check Large Size Drop (> 80% reduction when previous size was > 50KB)
+    if (targetDoc.file_size && targetDoc.file_size > 50000) {
+      if (file.size < targetDoc.file_size * 0.2) {
+        warnings.push(`Significant file size reduction: Existing version is ${formatBytes(targetDoc.file_size)}, but selected file is only ${formatBytes(file.size)}.`);
+      }
+    }
+
+    if (warnings.length > 0) {
+      setVersionWarningModal({ targetDoc, file, warnings });
+    } else {
+      performVersionUpload(targetDoc, file);
+    }
+  };
+
+  const performVersionUpload = async (targetDoc: DocItem, file: File) => {
     setVersionUploadingDocId(targetDoc.id);
     const controller = new AbortController();
     abortControllersRef.current[targetDoc.id] = controller;
@@ -349,6 +386,103 @@ export const Upload: React.FC = () => {
         style={{ display: 'none' }}
         accept=".pdf,.docx,.md,.html,.csv,.txt"
       />
+
+      {/* Soft Warning Dialog for Version Upload Mismatches */}
+      {versionWarningModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.75)',
+          backdropFilter: 'blur(4px)',
+          zIndex: 10000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '1.5rem'
+        }}>
+          <div style={{
+            backgroundColor: 'var(--bg-card)',
+            border: '1.5px solid #f59e0b',
+            borderRadius: 'var(--radius-lg)',
+            padding: '1.5rem 1.75rem',
+            maxWidth: '480px',
+            width: '100%',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)',
+            animation: 'slideIn 0.2s ease-out'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '50%',
+                backgroundColor: 'rgba(245, 158, 11, 0.15)',
+                color: '#f59e0b',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '1.25rem',
+                fontWeight: 'bold',
+                flexShrink: 0
+              }}>
+                ⚠️
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', color: '#fde68a' }}>
+                  Version Warning Detection
+                </h3>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-subtle)' }}>
+                  Creating v{versionWarningModal.targetDoc.version + 1} for {versionWarningModal.targetDoc.filename}
+                </p>
+              </div>
+            </div>
+
+            <div style={{
+              backgroundColor: 'var(--bg-input)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-md)',
+              padding: '0.85rem 1rem',
+              marginBottom: '1.25rem',
+              fontSize: '0.84rem',
+              color: 'var(--text-secondary)',
+              lineHeight: 1.55
+            }}>
+              <div style={{ fontWeight: 600, color: '#fde68a', marginBottom: '0.4rem' }}>
+                Please review before proceeding:
+              </div>
+              <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
+                {versionWarningModal.warnings.map((warn, idx) => (
+                  <li key={idx} style={{ marginBottom: '0.3rem' }}>{warn}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setVersionWarningModal(null)}
+              >
+                Cancel Upload
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ backgroundColor: '#f59e0b', borderColor: '#f59e0b', color: '#000', fontWeight: 600 }}
+                onClick={() => {
+                  const { targetDoc, file } = versionWarningModal;
+                  setVersionWarningModal(null);
+                  performVersionUpload(targetDoc, file);
+                }}
+              >
+                Proceed & Upload Version
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast Popup Notification */}
       {toastMessage && (
