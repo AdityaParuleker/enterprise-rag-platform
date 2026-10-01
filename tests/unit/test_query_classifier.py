@@ -388,6 +388,157 @@ async def test_user_requested_benchmark_cases(classifier, mock_llm_client):
     assert await classifier.classify_query("and what's your favorite team?", history_messages=casual_history) == QueryType.CONVERSATIONAL
 
 
+@pytest.mark.asyncio
+async def test_personal_memory_patterns_route_to_conversational(classifier, mock_llm_client):
+    """
+    Tests that personal memory recall queries route to CONVERSATIONAL via Step 4 fast-path.
+    """
+    mock_llm_client.generate_response.return_value = "NO"  # Even if LLM would return NO
+    memory_queries = [
+        "I like baseball",
+        "What i like to play",
+        "Which sport i like",
+        "Which sport do I like",
+        "What sport do I like",
+        "What is my favorite sport",
+        "Do you remember what sport I like",
+        "what do i like",
+        "what did i like",
+        "what are my hobbies",
+        "what is my hobby",
+        "what is my favourite sport",
+        "do you remember what i like"
+    ]
+    for q in memory_queries:
+        res = await classifier.classify_query(q)
+        assert res == QueryType.CONVERSATIONAL, f"Expected CONVERSATIONAL for personal memory query: '{q}', got {res}"
+
+
+@pytest.mark.asyncio
+async def test_step4_regex_beats_mock_llm_returning_no(classifier, mock_llm_client):
+    """
+    Verifies that when mock LLM returns 'NO' for 'which sport i like', Step 4 regex still routes it to CONVERSATIONAL.
+    """
+    mock_llm_client.generate_response.return_value = "NO"
+    res = await classifier.classify_query("Which sport i like")
+    assert res == QueryType.CONVERSATIONAL
+    # Verify Step 5 LLM was never called
+    mock_llm_client.generate_response.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_step5_not_called_when_step4_matches(classifier, mock_llm_client):
+    """
+    Verifies Step 5 LLM is bypassed when Step 4 matches fast-path.
+    """
+    mock_llm_client.generate_response.reset_mock()
+    res = await classifier.classify_query("What sport do I like")
+    assert res == QueryType.CONVERSATIONAL
+    mock_llm_client.generate_response.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_domain_keywords_override_personal_memory_words(classifier):
+    """
+    Verifies that Step 2 domain keywords take precedence over personal memory words.
+    """
+    domain_override_queries = [
+        "What are the sports covered by the wellness policy?",
+        "What are my permissions in the auth system?",
+        "What is my account limit for upload size?",
+        "Which document schema do I need?"
+    ]
+    for q in domain_override_queries:
+        res = await classifier.classify_query(q)
+        assert res == QueryType.DOMAIN, f"Expected DOMAIN for domain override query: '{q}', got {res}"
+
+
+@pytest.mark.asyncio
+async def test_classifier_history_refusal_filtering(classifier, mock_llm_client):
+    """
+    Verifies that assistant refusal messages ('No relevant document context found') are filtered out of history before LLM classification.
+    """
+    mock_llm_client.generate_response.return_value = "YES"
+    history = [
+        {"role": "user", "content": "What is the policy?"},
+        {"role": "assistant", "content": "I could not find sufficient information in the available documents to answer your question."},
+        {"role": "user", "content": "I live in New York"},
+        {"role": "assistant", "content": "Nice, New York is a big city!"}
+    ]
+    # Query that triggers LLM Step 5
+    await classifier.classify_query("What city did I mention earlier?", history_messages=history)
+    assert mock_llm_client.generate_response.called
+    prompt_sent = mock_llm_client.generate_response.call_args[1]["prompt"]
+    assert "I could not find sufficient information" not in prompt_sent
+    assert "New York" in prompt_sent
+
+
+@pytest.mark.asyncio
+async def test_two_words_between_which_what_and_verb(classifier, mock_llm_client):
+    """
+    Tests that up to two words between which/what and verb are allowed in PERSONAL_MEMORY_PATTERNS.
+    """
+    mock_llm_client.generate_response.return_value = "NO"
+    multi_word_queries = [
+        "which outdoor sport do i like",
+        "which outdoor sport i like",
+        "what favorite games do i play",
+        "which team sport did i like",
+        "what board games do i love"
+    ]
+    for q in multi_word_queries:
+        res = await classifier.classify_query(q)
+        assert res == QueryType.CONVERSATIONAL, f"Expected CONVERSATIONAL for multi-word query: '{q}', got {res}"
+
+
+@pytest.mark.asyncio
+async def test_negative_what_is_my_job_grade_stays_domain(classifier, mock_llm_client):
+    """
+    Negative test verifying that 'what is my job grade' does not route to CONVERSATIONAL.
+    """
+    mock_llm_client.generate_response.return_value = "NO"
+    res = await classifier.classify_query("what is my job grade")
+    assert res == QueryType.DOMAIN, f"Expected DOMAIN for 'what is my job grade', got {res}"
+
+
+@pytest.mark.asyncio
+async def test_modal_verbs_negative_and_positive_cases(classifier, mock_llm_client):
+    """
+    Verifies that modals (should|can|could|would|will|might|must) are rejected by Step 4 fast-path,
+    while positive preference recall patterns continue to pass.
+    """
+    mock_llm_client.generate_response.return_value = "NO"
+
+    # Negative modal cases -> must NOT match Step 4 fast-path (stays DOMAIN when LLM returns NO)
+    modal_negative_queries = [
+        "what should I play",
+        "what can I like",
+        "which sport should I play",
+        "what could I like",
+        "which game would I play",
+        "what will I play",
+        "which activity might I like",
+        "what must I like"
+    ]
+    for q in modal_negative_queries:
+        res = await classifier.classify_query(q)
+        assert res == QueryType.DOMAIN, f"Expected DOMAIN for modal query: '{q}', got {res}"
+
+    # Positive cases -> must match Step 4 fast-path -> CONVERSATIONAL
+    positive_queries = [
+        "which sport i like",
+        "which outdoor sport do i like",
+        "what sport do I like",
+        "what games did I play"
+    ]
+    for q in positive_queries:
+        res = await classifier.classify_query(q)
+        assert res == QueryType.CONVERSATIONAL, f"Expected CONVERSATIONAL for positive query: '{q}', got {res}"
+
+
+
+
+
 
 
 

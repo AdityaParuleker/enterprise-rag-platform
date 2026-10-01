@@ -3,6 +3,7 @@ Unit tests for ConversationStore & DB Authorization (Checkpoint 7.1).
 """
 
 import uuid
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -191,3 +192,43 @@ async def test_redis_cache_key_isolation():
     store = ConversationStore()
     key = store._get_redis_key(tenant_id, user_id, conv_id)
     assert key == "recent_messages:tenant-123:user-456:conv-789"
+
+
+@pytest.mark.asyncio
+async def test_redis_cache_hit_carries_id_and_filters_current_message():
+    """
+    Verifies that messages returned on the Redis cache hit path carry 'id' and can be filtered by current message id.
+    """
+    tenant_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    conv_id = str(uuid.uuid4())
+    m1_id = str(uuid.uuid4())
+    m2_id = str(uuid.uuid4())
+    current_msg_id = str(uuid.uuid4())
+
+    cached_messages = [
+        {"id": m1_id, "conversation_id": conv_id, "role": "user", "content": "I like baseball", "created_at": "2026-10-01T10:00:00"},
+        {"id": m2_id, "conversation_id": conv_id, "role": "assistant", "content": "Baseball is great!", "created_at": "2026-10-01T10:00:05"},
+        {"id": current_msg_id, "conversation_id": conv_id, "role": "user", "content": "which sport i like", "created_at": "2026-10-01T10:00:10"}
+    ]
+
+    mock_redis_manager = MagicMock()
+    mock_redis_client = MagicMock()
+    mock_redis_client.get = AsyncMock(return_value=json.dumps(cached_messages))
+    mock_redis_manager.get_client.return_value = mock_redis_client
+
+    store = ConversationStore(redis_manager=mock_redis_manager)
+    messages = await store.get_recent_messages(tenant_id=tenant_id, user_id=user_id, conversation_id=conv_id, limit=10)
+
+    # Verify all messages have 'id'
+    assert len(messages) == 3
+    for m in messages:
+        assert "id" in m and m["id"] is not None
+
+    # Verify prior_history construction excludes the current message by id
+    prior_history = [m for m in messages if str(m.get("id")) != current_msg_id]
+    assert len(prior_history) == 2
+    assert all(m["id"] != current_msg_id for m in prior_history)
+    assert prior_history[0]["content"] == "I like baseball"
+    assert prior_history[1]["content"] == "Baseball is great!"
+
