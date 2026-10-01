@@ -8,6 +8,7 @@ Supports local open-source LLM classification (Qwen3-0.6B) with strict binary YE
 import os
 import re
 import time
+import asyncio
 import logging
 from enum import Enum
 from typing import List, Dict, Any, Optional
@@ -25,9 +26,18 @@ CLASSIFIER_SYSTEM_PROMPT = """You are an intent classifier for an enterprise ass
 
 Classify the LATEST user message as CONVERSATIONAL or TECHNICAL, using the conversation history for context.
 
-CONVERSATIONAL includes greetings, personal statements/opinions, identity sharing, thanks, and casual remarks that do not request information from documents.
+CONVERSATIONAL includes greetings, personal statements/opinions, identity sharing, thanks, questions recalling personal preferences or details from conversation history (e.g., "What sport do I like?", "What is my name?"), and casual remarks that do not request information from documents.
 
-TECHNICAL includes any request for facts, specs, procedures, or document-grounded information.
+TECHNICAL includes any request for facts, specs, procedures, policies, or document-grounded information (e.g., "What is the leave policy?", "Explain authentication").
+
+Few-shot Examples:
+- User: "I like baseball" -> YES
+- User: "Which sport do I like?" (History: User likes baseball) -> YES
+- User: "What is my name?" -> YES
+- User: "Hi, how are you?" -> YES
+- User: "What is the leave policy?" -> NO
+- User: "How does authentication work?" -> NO
+- User: "What are the sports covered by the wellness policy?" -> NO
 
 Return exactly one word:
 YES
@@ -132,6 +142,14 @@ MEMORY_RECALL_PATTERNS = [
     re.compile(r"\b(?:what\s+did\s+you|what\s+was\s+your)\s+(?:just\s+|last\s+|previous\s+|prior\s+)?(?:say|tell\s+me|answer|reply|response)\b", re.IGNORECASE)
 ]
 
+PERSONAL_MEMORY_PATTERNS = [
+    re.compile(r"\bwhat\s+(do\s+|did\s+)?i\s+(like|love|prefer|play)\b", re.IGNORECASE),
+    re.compile(r"\b(which|what)\s+(?:(?!should\b|can\b|could\b|would\b|will\b|might\b|must\b)\w+\s+){1,2}(?:do\s+|did\s+)?i\s+(like|love|prefer|play)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+(is|was)\s+my\s+(favou?rite|name|hobby|sport)\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+are\s+my\s+(interests|hobbies|preferences)\b", re.IGNORECASE),
+    re.compile(r"\bdo\s+you\s+(remember|know)\b.*\b(about\s+me|what\s+i\s+(said|told|like))\b", re.IGNORECASE),
+]
+
 
 class QueryClassifier:
     """
@@ -140,7 +158,7 @@ class QueryClassifier:
     1. Input Normalization
     2. Substantive Domain Intent Safety Check (Force DOMAIN if query requests enterprise/technical info)
     3. History-Aware Contextual Check (Follow-ups vs Acknowledgements)
-    4. Cheap Rule-Based Pre-Filter (Fast-Path for greetings, intros, casual preferences, thanks)
+    4. Cheap Rule-Based Pre-Filter (Fast-Path for greetings, intros, casual preferences, personal memory recall, thanks)
     5. Context-Aware LLM-Based Intent Classification (passing last 3-4 turns) with strict YES/NO parsing
     6. Fail-Safe Default to DOMAIN
     """
@@ -210,6 +228,10 @@ class QueryClassifier:
             if pattern.search(clause) or pattern.search(c_clean):
                 return True
 
+        for pattern in PERSONAL_MEMORY_PATTERNS:
+            if pattern.search(clause) or pattern.search(c_clean):
+                return True
+
         # Check compound greeting + intro / pleasantry in single clause (e.g. "hi i am sarah")
         leading_greeting_match = re.match(rf"^{GREETING_WORDS}(?:\s+{TARGET_WORDS})?\s+(.+)$", c_clean, re.IGNORECASE)
         if leading_greeting_match:
@@ -232,12 +254,43 @@ class QueryClassifier:
         if stripped_query in STANDALONE_CONVERSATIONAL_PHRASES:
             return True
 
+        for pattern in PERSONAL_MEMORY_PATTERNS:
+            if pattern.search(clean_query) or pattern.search(stripped_query):
+                return True
+
+        for pattern in MEMORY_RECALL_PATTERNS:
+            if pattern.search(clean_query) or pattern.search(stripped_query):
+                return True
+
         # Split query into clauses by punctuation (. , ! ? ;)
         clauses = [part.strip() for part in re.split(r"[,.!?;\n]+", clean_query) if part.strip()]
         if not clauses:
             return True
 
         return all(self._is_conversational_clause(clause) for clause in clauses)
+
+    def _find_matching_pattern(self, clean_query: str) -> Optional[str]:
+        norm = clean_query.lower().strip()
+        stripped = re.sub(r"[^\w\s]", "", norm).strip()
+        if stripped in STANDALONE_CONVERSATIONAL_PHRASES:
+            return "standalone-phrase"
+        if GREETING_PATTERN.match(stripped):
+            return "greeting"
+        if PLEASANTRY_PATTERN.match(stripped):
+            return "pleasantry"
+        if NAME_INTRO_PATTERN.match(stripped):
+            return "name-intro"
+        if CASUAL_PREFERENCE_PATTERN.match(stripped):
+            return "casual-preference"
+        if FAREWELL_THANKS_PATTERN.match(stripped):
+            return "farewell-thanks"
+        for p in PERSONAL_MEMORY_PATTERNS:
+            if p.search(clean_query) or p.search(stripped):
+                return f"personal-memory:{p.pattern}"
+        for p in MEMORY_RECALL_PATTERNS:
+            if p.search(clean_query) or p.search(stripped):
+                return f"memory-recall:{p.pattern}"
+        return "conversational-fast-path"
 
     async def classify_query(
         self,
@@ -247,31 +300,28 @@ class QueryClassifier:
         # STEP 1: Input Normalization
         clean_query = query.strip() if query else ""
         context_turns_count = len(history_messages) if history_messages else 0
+        normalized_query = clean_query.lower()
+
+        def _log_decision(step: int, result: QueryType, matched_pattern: Optional[str] = None, raw_llm: Optional[str] = None):
+            logger.info(
+                f"QueryClassifier Structured Log | query={repr(clean_query)} | normalized_query={repr(normalized_query)} | "
+                f"deciding_step={step} | matched_pattern={repr(matched_pattern)} | "
+                f"raw_llm_output={repr(raw_llm)} | result={result.value}"
+            )
 
         if not clean_query:
-            logger.info(
-                f"QueryClassifier Decision | query='' | context_turns={context_turns_count} | "
-                f"result=conversational | path=pre-filter:empty-input | detail=Empty query string"
-            )
+            _log_decision(1, QueryType.CONVERSATIONAL, matched_pattern="empty-input")
             return QueryType.CONVERSATIONAL
-
-        normalized_query = clean_query.lower()
 
         # STEP 2: Substantive Domain Intent Safety Check
         for kw in SUBSTANTIVE_DOMAIN_KEYWORDS:
             if re.search(r"\b" + re.escape(kw) + r"\b", normalized_query):
-                logger.info(
-                    f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                    f"result=domain | path=pre-filter:domain-keyword | detail=Matched substantive keyword '{kw}'"
-                )
+                _log_decision(2, QueryType.DOMAIN, matched_pattern=f"domain-keyword:{kw}")
                 return QueryType.DOMAIN
 
         for pattern in DOMAIN_INTENT_PATTERNS:
             if re.search(pattern, normalized_query):
-                logger.info(
-                    f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                    f"result=domain | path=pre-filter:domain-intent-pattern | detail=Matched domain intent pattern"
-                )
+                _log_decision(2, QueryType.DOMAIN, matched_pattern=f"domain-intent-pattern:{pattern}")
                 return QueryType.DOMAIN
 
         # STEP 3: History-Aware Contextual Check
@@ -290,36 +340,43 @@ class QueryClassifier:
                     "cool", "nice", "alright", "sure", "yep", "yeah", "no problem", "np", "fine", "good", "awesome", "sweet"
                 }
                 if stripped_query in acknowledgement_phrases:
-                    logger.info(
-                        f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                        f"result=conversational | path=history:acknowledgement | detail=Post-domain response acknowledgement"
-                    )
+                    _log_decision(3, QueryType.CONVERSATIONAL, matched_pattern=f"history:acknowledgement:{stripped_query}")
                     return QueryType.CONVERSATIONAL
 
                 followup_triggers = ["what about", "and what about", "can you explain", "explain that", "more details", "how about", "tell me more"]
-                if any(tr in normalized_query for tr in followup_triggers):
-                    logger.info(
-                        f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                        f"result=domain | path=history:followup | detail=Contextual domain follow-up query"
-                    )
-                    return QueryType.DOMAIN
+                for tr in followup_triggers:
+                    if tr in normalized_query:
+                        _log_decision(3, QueryType.DOMAIN, matched_pattern=f"history:followup:{tr}")
+                        return QueryType.DOMAIN
 
         # STEP 4: Cheap Rule-Based Conversational Pre-Filter (Fast-Path)
         if self.use_fast_path and self._is_purely_conversational(clean_query):
-            logger.info(
-                f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                f"result=conversational | path=pre-filter:rule-based | detail=Matched conversational rule-based pattern"
-            )
+            matched_pat = self._find_matching_pattern(clean_query)
+            _log_decision(4, QueryType.CONVERSATIONAL, matched_pattern=matched_pat)
             return QueryType.CONVERSATIONAL
 
         # STEP 5: Context-Aware LLM-Based Intent Classification (passing last 3-4 turns / up to 6 messages)
         if self.enabled:
             start_time = time.time()
+            refusal_prefixes = (
+                "no relevant document context",
+                "i could not find sufficient information in the available documents",
+                "no relevant document found",
+                "i do not have enough information"
+            )
             try:
                 history_snippet = ""
                 if history_messages:
+                    # Filter out assistant document refusal responses from history before LLM classification
+                    filtered_messages = [
+                        m for m in history_messages
+                        if not (
+                            (m.get("role") == "assistant" or m.get("sender") == "assistant")
+                            and any(m.get("content", "").lower().strip().startswith(prefix) for prefix in refusal_prefixes)
+                        )
+                    ]
                     # Pass last 3-4 turns (up to 6 messages: user & assistant turns)
-                    recent_messages = history_messages[-6:]
+                    recent_messages = filtered_messages[-6:]
                     formatted_turns = []
                     for m in recent_messages:
                         r = "User" if (m.get("role") == "user" or m.get("sender") == "user") else "Assistant"
@@ -327,9 +384,9 @@ class QueryClassifier:
                     history_snippet = "\n".join(formatted_turns)
 
                 if history_snippet:
-                    prompt = f"{CLASSIFIER_SYSTEM_PROMPT}\n\nRECENT CONVERSATION HISTORY:\n{history_snippet}\n\nLATEST USER MESSAGE:\n{clean_query}"
+                    prompt = f"{CLASSIFIER_SYSTEM_PROMPT}\n\nHISTORY:\n{history_snippet}\n\nCURRENT QUERY:\n{clean_query}"
                 else:
-                    prompt = f"{CLASSIFIER_SYSTEM_PROMPT}\n\nLATEST USER MESSAGE:\n{clean_query}"
+                    prompt = f"{CLASSIFIER_SYSTEM_PROMPT}\n\nCURRENT QUERY:\n{clean_query}"
 
                 llm_response = self.llm_client.generate_response(
                     prompt=prompt,
@@ -342,32 +399,25 @@ class QueryClassifier:
                 parsed_res = parse_binary_response(llm_response)
 
                 if parsed_res is not None:
-                    logger.info(
-                        f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                        f"result={parsed_res.value} | path=llm-classifier | "
-                        f"detail=LLM output='{llm_response.strip()}' model='{self.model}' latency={latency:.3f}s"
-                    )
+                    _log_decision(5, parsed_res, raw_llm=llm_response.strip())
                     return parsed_res
                 else:
-                    logger.warning(
-                        f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                        f"result=domain | path=fallback:domain-default | "
-                        f"detail=Strict binary parser rejected output '{llm_response.strip()}'. latency={latency:.3f}s"
-                    )
+                    _log_decision(5, QueryType.DOMAIN, matched_pattern=f"llm-binary-parse-rejected:latency={latency:.3f}s", raw_llm=llm_response.strip())
                     return QueryType.DOMAIN
             except Exception as e:
                 latency = time.time() - start_time
-                logger.warning(
-                    f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-                    f"result=domain | path=fallback:domain-default | "
-                    f"detail=LLM classification failed or timed out ({e}). latency={latency:.3f}s"
+                is_timeout = (
+                    isinstance(e, (asyncio.TimeoutError, TimeoutError))
+                    or "timeout" in str(e).lower()
+                    or latency >= self.timeout_seconds
                 )
+                if is_timeout:
+                    _log_decision(5, QueryType.DOMAIN, matched_pattern=f"llm-timeout:{latency:.3f}s")
+                else:
+                    _log_decision(5, QueryType.DOMAIN, matched_pattern=f"llm-error:{type(e).__name__}:{latency:.3f}s")
                 return QueryType.DOMAIN
 
         # STEP 6: Fail-Safe Default to DOMAIN
-        logger.info(
-            f"QueryClassifier Decision | query={repr(clean_query)} | context_turns={context_turns_count} | "
-            f"result=domain | path=fallback:disabled-default | detail=Classifier disabled or unhandled"
-        )
+        _log_decision(6, QueryType.DOMAIN, matched_pattern="fallback:disabled-or-unhandled")
         return QueryType.DOMAIN
 

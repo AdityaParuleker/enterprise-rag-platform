@@ -36,6 +36,24 @@ from backend.app.generation.streaming import (
 )
 
 
+SAFETY_NET_STOP_WORDS = {
+    "a", "an", "the", "and", "or", "but", "if", "because", "as", "what",
+    "which", "who", "whom", "this", "that", "these", "those", "then",
+    "just", "so", "than", "such", "both", "through", "about", "for", "is",
+    "of", "while", "during", "to", "from", "in", "out", "on", "off", "again",
+    "further", "then", "once", "here", "there", "when", "where", "why", "how",
+    "all", "any", "both", "each", "few", "more", "most", "other", "some", "such",
+    "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "can",
+    "will", "just", "don", "should", "now", "i", "me", "my", "mine", "myself", "we", "our",
+    "ours", "ourselves", "you", "your", "yours", "yourself", "yourselves", "he", "him",
+    "his", "himself", "she", "her", "hers", "herself", "it", "its", "itself", "they",
+    "them", "their", "theirs", "themselves", "am", "is", "are", "was", "were", "be",
+    "been", "being", "have", "has", "had", "having", "do", "does", "did", "doing",
+    "would", "should", "could", "ought", "tell", "say", "said", "know", "remember",
+    "like", "likes", "liked", "love", "loves", "loved", "play", "plays", "played", "prefer", "prefers"
+}
+
+
 router = APIRouter(prefix="/api/v1", tags=["Chat"])
 
 
@@ -181,13 +199,14 @@ class ChatOrchestrator:
                 )
 
             # Pre-persist user message before retrieval/generation starts
-            await self.conversation_store.add_user_message(
+            user_msg = await self.conversation_store.add_user_message(
                 tenant_id=tenant_id,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 content=query,
                 conn=db_conn
             )
+            curr_msg_id = str(user_msg.get("id")) if user_msg else None
 
             history_messages = await self.conversation_store.get_recent_messages(
                 tenant_id=tenant_id,
@@ -198,36 +217,30 @@ class ChatOrchestrator:
             )
             history_summary = conv.get("summary")
 
+        # Build prior_history once by excluding the just-persisted current message by id
+        prior_history = []
+        if history_messages:
+            prior_history = [
+                m for m in history_messages
+                if curr_msg_id is None or str(m.get("id")) != curr_msg_id
+            ]
+
         import logging
         logging.getLogger(__name__).info(
             f"[DEBUG_CHAT] Incoming request | query={repr(query)} | conversation_id={conversation_id} | "
-            f"history_messages_count={len(history_messages)} | history_messages={history_messages}"
+            f"prior_history_count={len(prior_history)}"
         )
 
-        # STEP 2.5. Conversational Query Routing (Bypass retrieval for greetings / small talk)
-        query_type = await self.query_classifier.classify_query(
-            query=query,
-            history_messages=history_messages
-        )
-
-        if query_type == QueryType.CONVERSATIONAL:
-            import logging
-            logging.getLogger(__name__).info("Query routing: query_type=conversational, retrieval_skipped=true")
-
+        async def _stream_conversational_response(query_text: str, q_type_meta: str = "conversational"):
             history_context = ""
-            if history_messages:
-                prior_msgs = [
-                    m for m in history_messages
-                    if not (m.get("content") == query and m == history_messages[-1])
-                ]
-                if prior_msgs:
-                    formatted_turns = []
-                    for m in prior_msgs:
-                        role = "User" if (m.get("role") == "user" or m.get("sender") == "user") else "Assistant"
-                        formatted_turns.append(f"{role}: {m.get('content', '')}")
-                    history_context = "RECENT CONVERSATION HISTORY:\n" + "\n".join(formatted_turns) + "\n\n"
+            if prior_history:
+                formatted_turns = []
+                for m in prior_history:
+                    role = "User" if (m.get("role") == "user" or m.get("sender") == "user") else "Assistant"
+                    formatted_turns.append(f"{role}: {m.get('content', '')}")
+                history_context = "HISTORY:\n" + "\n".join(formatted_turns) + "\n\n"
 
-            conv_user_message = f"{history_context}USER MESSAGE:\n{query}" if history_context else query
+            conv_user_message = f"{history_context}CURRENT QUERY:\n{query_text}" if history_context else query_text
 
             conv_sys_prompt = (
                 "You are a helpful enterprise AI assistant. "
@@ -235,47 +248,58 @@ class ChatOrchestrator:
                 "If the user asks what their name is or asks about personal details from history, answer directly using ONLY facts stated in the provided conversation history. "
                 "If the requested personal detail or fact was never stated in the conversation history, state politely that it hasn't been mentioned yet."
             )
-            try:
-                raw_token_stream = self.llm_client.stream_response(
-                    prompt=conv_user_message,
-                    system=conv_sys_prompt
-                )
+            raw_token_stream = self.llm_client.stream_response(
+                prompt=conv_user_message,
+                system=conv_sys_prompt
+            )
 
-                sse_generator = self.streamer.astream_tokens(
-                    token_stream=raw_token_stream,
-                    citations=[],
-                    done_metadata={"citations_count": 0, "query_type": "conversational"}
-                )
+            sse_generator = self.streamer.astream_tokens(
+                token_stream=raw_token_stream,
+                citations=[],
+                done_metadata={"citations_count": 0, "query_type": q_type_meta}
+            )
 
-                async def conv_persistence_wrapper(token_gen):
-                    full_content = []
-                    async for event_str in token_gen:
-                        if isinstance(event_str, str) and event_str.startswith("data: "):
-                            try:
-                                import json
-                                event_data = json.loads(event_str[6:-2])
-                                if event_data.get("type") == "token":
-                                    full_content.append(event_data.get("content", ""))
-                            except Exception:
-                                pass
-                        yield event_str
-
-                    if conversation_id and full_content:
-                        assistant_text = "".join(full_content)
+            async def conv_persistence_wrapper(token_gen):
+                full_content = []
+                async for event_str in token_gen:
+                    if isinstance(event_str, str) and event_str.startswith("data: "):
                         try:
-                            await self.conversation_store.add_assistant_message(
-                                tenant_id=tenant_id,
-                                user_id=user_id,
-                                conversation_id=conversation_id,
-                                content=assistant_text,
-                                citations=[],
-                                conn=db_conn
-                            )
-                        except Exception as e:
-                            import logging
-                            logging.getLogger(__name__).warning(f"Assistant message persistence failed: {e}")
+                            import json
+                            event_data = json.loads(event_str[6:-2])
+                            if event_data.get("type") == "token":
+                                full_content.append(event_data.get("content", ""))
+                        except Exception:
+                            pass
+                    yield event_str
 
-                return self.streamer.create_sse_response(conv_persistence_wrapper(sse_generator))
+                if conversation_id and full_content:
+                    assistant_text = "".join(full_content)
+                    try:
+                        await self.conversation_store.add_assistant_message(
+                            tenant_id=tenant_id,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            content=assistant_text,
+                            citations=[],
+                            conn=db_conn
+                        )
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(f"Assistant message persistence failed: {e}")
+
+            return self.streamer.create_sse_response(conv_persistence_wrapper(sse_generator))
+
+        # STEP 2.5. Conversational Query Routing (Bypass retrieval for greetings / small talk)
+        query_type = await self.query_classifier.classify_query(
+            query=query,
+            history_messages=prior_history
+        )
+
+        if query_type == QueryType.CONVERSATIONAL:
+            import logging
+            logging.getLogger(__name__).info("Query routing: query_type=conversational, retrieval_skipped=true")
+            try:
+                return await _stream_conversational_response(query, "conversational")
             except Exception as e:
                 err_msg = str(e)
                 async def err_gen():
@@ -302,10 +326,10 @@ class ChatOrchestrator:
             )
 
         # 5. Query Rewriting & Multi-Branch Sub-Query Decomposition
-        if enable_rewriting and (history_messages or history_summary):
+        if enable_rewriting and (prior_history or history_summary):
             retrieval_queries = await self.query_rewriter.rewrite_query(
                 user_query=query,
-                history_messages=history_messages,
+                history_messages=prior_history,
                 summary=history_summary
             )
             max_branches = int(os.getenv("MAX_RETRIEVAL_BRANCHES", "1" if os.getenv("LLM_PROVIDER", "").lower() in ("gemini", "google") else "3"))
@@ -417,6 +441,29 @@ class ChatOrchestrator:
             strict_grounding=strict_grounding
         )
         if context_res.action == "INSUFFICIENT_EVIDENCE":
+            # Safety net (secondary): DOMAIN route + INSUFFICIENT_EVIDENCE + first-person query + prior user message shares content word
+            import re
+            query_tokens = {w for w in re.findall(r"\b[a-z]{2,}\b", query.lower()) if w not in SAFETY_NET_STOP_WORDS}
+            first_person_match = re.search(r"\b(i|me|my|mine|myself)\b", query, re.IGNORECASE)
+
+            has_overlapping_user_history = False
+            if first_person_match and query_tokens and prior_history:
+                for m in prior_history:
+                    if (m.get("role") == "user" or m.get("sender") == "user") and m.get("content"):
+                        user_tokens = {w for w in re.findall(r"\b[a-z]{2,}\b", str(m.get("content", "")).lower()) if w not in SAFETY_NET_STOP_WORDS}
+                        if user_tokens & query_tokens:
+                            has_overlapping_user_history = True
+                            break
+
+            if first_person_match and has_overlapping_user_history:
+                import logging
+                logging.getLogger(__name__).info("Safety net triggered: DOMAIN refusal redirected to conversation memory based on token overlap")
+                try:
+                    return await _stream_conversational_response(query, "conversational_safety_net")
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Safety net conversational fallback failed: {e}")
+
             refusal_text = context_res.detail.get("response_text") if context_res.detail else "I could not find sufficient information in the available documents to answer your question."
             async def refusal_stream():
                 yield format_token_event(refusal_text)
